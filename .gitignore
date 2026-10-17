@@ -1,0 +1,26 @@
+# Binaries
+bin/
+/pm
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Databases and cache
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*~
