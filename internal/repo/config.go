@@ -30,6 +30,18 @@ func DefaultRepos() []RepoConfig {
 			URL:      DefaultArchExtraURL,
 			Enabled:  true,
 		},
+		{
+			Name:     "debian-main",
+			Provider: "debian",
+			URL:      DefaultDebianURL,
+			Enabled:  true,
+		},
+		{
+			Name:     "fedora-base",
+			Provider: "fedora",
+			URL:      DefaultFedoraURL,
+			Enabled:  true,
+		},
 	}
 }
 

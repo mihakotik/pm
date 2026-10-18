@@ -57,10 +57,22 @@ var syncCmd = &cobra.Command{
 					return fmt.Errorf("failed to sync repo %s: %w", cfg.Name, err)
 				}
 				syncedRepos++
+			case "debian":
+				debProv := repo.NewDebianProvider(database, cfg.URL)
+				if err := debProv.Sync(ctx); err != nil {
+					slog.Error("failed to sync debian repository", "name", cfg.Name, "err", err)
+					return fmt.Errorf("failed to sync repo %s: %w", cfg.Name, err)
+				}
+				syncedRepos++
+			case "fedora":
+				fedoraProv := repo.NewFedoraProvider(database, cfg.URL)
+				if err := fedoraProv.Sync(ctx); err != nil {
+					slog.Error("failed to sync fedora repository", "name", cfg.Name, "err", err)
+					return fmt.Errorf("failed to sync repo %s: %w", cfg.Name, err)
+				}
+				syncedRepos++
 			case "waynux":
-				slog.Info("native waynux provider sync (pending stage 3/5)")
-			case "debian", "fedora":
-				slog.Info("foreign provider sync (scheduled for stage 3)", "provider", cfg.Provider)
+				slog.Info("native waynux provider sync (pending stage 5)")
 			default:
 				slog.Warn("unknown provider specified in config", "provider", cfg.Provider)
 			}
