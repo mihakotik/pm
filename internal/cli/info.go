@@ -7,6 +7,7 @@ import (
 
 	"github.com/mihakotik/pm/internal/db"
 	pkg "github.com/mihakotik/pm/internal/package"
+	"github.com/mihakotik/pm/internal/repo"
 	"github.com/mihakotik/pm/internal/utils"
 	"github.com/spf13/cobra"
 )
@@ -36,12 +37,19 @@ var infoCmd = &cobra.Command{
 			p = instPkg
 			isInstalled = true
 		} else {
-			// Fallback to available
+			// Fallback to local available repos
 			availPkg, err := database.GetAvailable(cmd.Context(), pkgName, "")
-			if err != nil {
-				return fmt.Errorf("package %q not found in installed or available repositories", pkgName)
+			if err == nil && availPkg != nil {
+				p = availPkg
+			} else {
+				// Fallback to AUR RPC
+				aurPkg, aurErr := repo.NewAURProvider().Get(cmd.Context(), pkgName)
+				if aurErr == nil && aurPkg != nil {
+					p = aurPkg
+				} else {
+					return fmt.Errorf("package %q not found in installed, repository, or AUR", pkgName)
+				}
 			}
-			p = availPkg
 		}
 
 		fmt.Printf("Name        : %s\n", p.Name)
