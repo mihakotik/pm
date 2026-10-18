@@ -3,8 +3,10 @@ package cli
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/mihakotik/pm/internal/db"
+	pkg "github.com/mihakotik/pm/internal/package"
 	"github.com/mihakotik/pm/internal/utils"
 	"github.com/spf13/cobra"
 )
@@ -24,15 +26,38 @@ var infoCmd = &cobra.Command{
 		defer dbConn.Close()
 
 		database := db.New(dbConn)
-		p, err := database.GetAvailable(cmd.Context(), pkgName, "")
-		if err != nil {
-			return fmt.Errorf("error querying package %s: %w", pkgName, err)
+
+		var p *pkg.Package
+		isInstalled := false
+
+		// Check installed first
+		instPkg, err := database.GetInstalled(cmd.Context(), pkgName)
+		if err == nil && instPkg != nil {
+			p = instPkg
+			isInstalled = true
+		} else {
+			// Fallback to available
+			availPkg, err := database.GetAvailable(cmd.Context(), pkgName, "")
+			if err != nil {
+				return fmt.Errorf("package %q not found in installed or available repositories", pkgName)
+			}
+			p = availPkg
 		}
 
 		fmt.Printf("Name        : %s\n", p.Name)
 		fmt.Printf("Version     : %s\n", p.Version)
 		fmt.Printf("Provider    : %s\n", p.Provider)
-		fmt.Printf("Description : %s\n", p.Description)
+		if isInstalled {
+			fmt.Printf("Status      : Installed\n")
+			if p.InstallDate > 0 {
+				fmt.Printf("Install Date: %s\n", time.Unix(p.InstallDate, 0).Format(time.RFC1123))
+			}
+		} else {
+			fmt.Printf("Status      : Available\n")
+		}
+		if p.Description != "" {
+			fmt.Printf("Description : %s\n", p.Description)
+		}
 		if p.URL != "" {
 			fmt.Printf("URL         : %s\n", p.URL)
 		}
@@ -45,9 +70,13 @@ var infoCmd = &cobra.Command{
 		if len(p.Depends) > 0 {
 			var depList []string
 			for _, d := range p.Depends {
-				depList = append(depList, d.Name+d.Version)
+				if d.Version != "" {
+					depList = append(depList, fmt.Sprintf("%s (%s)", d.Name, d.Version))
+				} else {
+					depList = append(depList, d.Name)
+				}
 			}
-			fmt.Printf("Depends On  : %s\n", strings.Join(depList, "  "))
+			fmt.Printf("Depends On  : %s\n", strings.Join(depList, ", "))
 		}
 		return nil
 	},

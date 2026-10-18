@@ -2,8 +2,9 @@ package cli
 
 import (
 	"fmt"
-	"log/slog"
 
+	"github.com/mihakotik/pm/internal/db"
+	"github.com/mihakotik/pm/internal/utils"
 	"github.com/spf13/cobra"
 )
 
@@ -12,8 +13,29 @@ var listCmd = &cobra.Command{
 	Short: "List installed packages",
 	Long:  "List all packages currently installed on the Waynux system along with their provider and version.",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		slog.Info("list installed packages")
-		fmt.Println("list: no installed packages found [stub]")
+		dbConn, err := db.Open(utils.DBPath())
+		if err != nil {
+			return fmt.Errorf("failed opening database: %w", err)
+		}
+		defer dbConn.Close()
+
+		database := db.New(dbConn)
+		pkgs, err := database.ListInstalled(cmd.Context())
+		if err != nil {
+			return fmt.Errorf("failed listing installed packages: %w", err)
+		}
+
+		if len(pkgs) == 0 {
+			fmt.Println("No packages currently installed.")
+			return nil
+		}
+
+		fmt.Printf("%-24s %-16s %-12s\n", "NAME", "VERSION", "PROVIDER")
+		fmt.Printf("%-24s %-16s %-12s\n", "----", "-------", "--------")
+		for _, p := range pkgs {
+			fmt.Printf("%-24s %-16s %-12s\n", p.Name, p.Version, p.Provider)
+		}
+		fmt.Printf("\nTotal installed: %d\n", len(pkgs))
 		return nil
 	},
 }

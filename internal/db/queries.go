@@ -385,3 +385,68 @@ func (d *DB) DeleteInstalled(ctx context.Context, name string) error {
 
 	return tx.Commit()
 }
+
+// GetDependents returns names of installed packages that depend on depName.
+func (d *DB) GetDependents(ctx context.Context, depName string) ([]string, error) {
+	rows, err := d.conn.QueryContext(ctx, `
+		SELECT pkg_name FROM depends WHERE dep_name = ?
+	`, depName)
+	if err != nil {
+		return nil, fmt.Errorf("failed querying dependents for %s: %w", depName, err)
+	}
+	defer rows.Close()
+
+	var deps []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err == nil {
+			deps = append(deps, name)
+		}
+	}
+	return deps, nil
+}
+
+// HistoryEntry represents a transaction record in the history table.
+type HistoryEntry struct {
+	ID         int64
+	Action     string
+	PkgName    string
+	OldVersion string
+	NewVersion string
+	Timestamp  int64
+}
+
+// GetHistory returns audit history for a package or all packages (if pkgName is empty).
+func (d *DB) GetHistory(ctx context.Context, pkgName string) ([]HistoryEntry, error) {
+	var query string
+	var args []any
+	if pkgName != "" {
+		query = `SELECT id, action, pkg_name, old_version, new_version, timestamp FROM history WHERE pkg_name = ? ORDER BY id DESC`
+		args = []any{pkgName}
+	} else {
+		query = `SELECT id, action, pkg_name, old_version, new_version, timestamp FROM history ORDER BY id DESC LIMIT 50`
+	}
+
+	rows, err := d.conn.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed querying history: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []HistoryEntry
+	for rows.Next() {
+		var e HistoryEntry
+		var oldVer, newVer sql.NullString
+		if err := rows.Scan(&e.ID, &e.Action, &e.PkgName, &oldVer, &newVer, &e.Timestamp); err != nil {
+			return nil, fmt.Errorf("failed scanning history entry: %w", err)
+		}
+		if oldVer.Valid {
+			e.OldVersion = oldVer.String
+		}
+		if newVer.Valid {
+			e.NewVersion = newVer.String
+		}
+		entries = append(entries, e)
+	}
+	return entries, nil
+}
