@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/mihakotik/pm/internal/db"
+	"github.com/mihakotik/pm/internal/installer"
+	"github.com/mihakotik/pm/internal/utils"
 	"github.com/spf13/cobra"
 )
 
@@ -18,6 +21,29 @@ var foreignCmd = &cobra.Command{
 func runForeign(cmd *cobra.Command, args []string) error {
 	filePath := args[0]
 	slog.Info("foreign install requested", "file", filePath, "force", Flags.Force, "dry-run", Flags.DryRun)
-	fmt.Printf("%sforeign: installing package from %s [stub]\n", DryRunPrefix(), filePath)
+
+	if Flags.DryRun {
+		fmt.Printf("%sforeign: would install package from %s into /opt/pm/<provider>/<pkg>\n", DryRunPrefix(), filePath)
+		return nil
+	}
+
+	dbConn, err := db.Open(utils.DBPath())
+	if err != nil {
+		return fmt.Errorf("failed to open database: %w", err)
+	}
+	defer dbConn.Close()
+
+	database := db.New(dbConn)
+	inst := installer.New(database)
+
+	result, err := inst.InstallForeign(cmd.Context(), nil, filePath)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("==> Installed foreign package %s (%s) version %s\n", result.Package.Name, result.Package.Provider, result.Package.Version)
+	fmt.Printf("    Sandbox path: %s\n", utils.ProviderOptDir(result.Package.Provider, result.Package.Name))
+	fmt.Printf("    Files registered: %d\n", len(result.Files))
+
 	return nil
 }

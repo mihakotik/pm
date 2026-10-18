@@ -160,3 +160,228 @@ func (d *DB) GetAvailable(ctx context.Context, name, provider string) (*pkg.Pack
 
 	return &p, nil
 }
+
+// RegisterInstalled stores package metadata, installed files, dependencies, and a history entry in a single transaction.
+func (d *DB) RegisterInstalled(ctx context.Context, p *pkg.Package, files []pkg.ExtractedFileInfo) error {
+	tx, err := d.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 1. Insert or replace into installed
+	_, err = tx.ExecContext(ctx, `
+		INSERT OR REPLACE INTO installed (name, version, provider, install_date, build_date, license)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, p.Name, p.Version, p.Provider, p.InstallDate, p.BuildDate, p.License)
+	if err != nil {
+		return fmt.Errorf("failed inserting installed package %s: %w", p.Name, err)
+	}
+
+	// 2. Remove old files for this package if re-installing
+	_, err = tx.ExecContext(ctx, "DELETE FROM files WHERE pkg_name = ?", p.Name)
+	if err != nil {
+		return fmt.Errorf("failed clearing old files for %s: %w", p.Name, err)
+	}
+
+	// 3. Insert files
+	if len(files) > 0 {
+		fileStmt, err := tx.PrepareContext(ctx, `
+			INSERT OR REPLACE INTO files (path, pkg_name, sha256, mode)
+			VALUES (?, ?, ?, ?)
+		`)
+		if err != nil {
+			return fmt.Errorf("failed preparing files statement: %w", err)
+		}
+		defer fileStmt.Close()
+
+		for _, f := range files {
+			_, err = fileStmt.ExecContext(ctx, f.Path, p.Name, f.SHA256, f.Mode)
+			if err != nil {
+				return fmt.Errorf("failed inserting file %s: %w", f.Path, err)
+			}
+		}
+	}
+
+	// 4. Update dependencies
+	_, err = tx.ExecContext(ctx, "DELETE FROM depends WHERE pkg_name = ?", p.Name)
+	if err != nil {
+		return fmt.Errorf("failed clearing old dependencies for %s: %w", p.Name, err)
+	}
+
+	if len(p.Depends) > 0 {
+		depStmt, err := tx.PrepareContext(ctx, `
+			INSERT OR REPLACE INTO depends (pkg_name, dep_name, dep_version, dep_type)
+			VALUES (?, ?, ?, ?)
+		`)
+		if err != nil {
+			return fmt.Errorf("failed preparing depends statement: %w", err)
+		}
+		defer depStmt.Close()
+
+		for _, dep := range p.Depends {
+			_, err = depStmt.ExecContext(ctx, p.Name, dep.Name, dep.Version, dep.Type)
+			if err != nil {
+				return fmt.Errorf("failed inserting dependency %s: %w", dep.Name, err)
+			}
+		}
+	}
+
+	// 5. Record history
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO history (action, pkg_name, old_version, new_version, timestamp)
+		VALUES ('install', ?, '', ?, ?)
+	`, p.Name, p.Version, p.InstallDate)
+	if err != nil {
+		return fmt.Errorf("failed inserting history record: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed committing install transaction: %w", err)
+	}
+
+	return nil
+}
+
+// GetInstalled retrieves an installed package by name.
+func (d *DB) GetInstalled(ctx context.Context, name string) (*pkg.Package, error) {
+	var p pkg.Package
+	err := d.conn.QueryRowContext(ctx, `
+		SELECT name, version, provider, install_date, build_date, license
+		FROM installed
+		WHERE name = ?
+	`, name).Scan(&p.Name, &p.Version, &p.Provider, &p.InstallDate, &p.BuildDate, &p.License)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("package %s is not installed", name)
+		}
+		return nil, fmt.Errorf("failed querying installed package %s: %w", name, err)
+	}
+
+	// Load dependencies
+	rows, err := d.conn.QueryContext(ctx, `
+		SELECT dep_name, dep_version, dep_type
+		FROM depends
+		WHERE pkg_name = ?
+	`, name)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var dep pkg.Dep
+			var depVer, depType sql.NullString
+			if err := rows.Scan(&dep.Name, &depVer, &depType); err == nil {
+				if depVer.Valid {
+					dep.Version = depVer.String
+				}
+				if depType.Valid {
+					dep.Type = depType.String
+				}
+				p.Depends = append(p.Depends, dep)
+			}
+		}
+	}
+
+	return &p, nil
+}
+
+// ListInstalled returns all installed packages.
+func (d *DB) ListInstalled(ctx context.Context) ([]pkg.Package, error) {
+	rows, err := d.conn.QueryContext(ctx, `
+		SELECT name, version, provider, install_date, build_date, license
+		FROM installed
+		ORDER BY name ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed querying installed packages: %w", err)
+	}
+	defer rows.Close()
+
+	var result []pkg.Package
+	for rows.Next() {
+		var p pkg.Package
+		if err := rows.Scan(&p.Name, &p.Version, &p.Provider, &p.InstallDate, &p.BuildDate, &p.License); err != nil {
+			return nil, fmt.Errorf("failed scanning installed package: %w", err)
+		}
+		result = append(result, p)
+	}
+
+	return result, nil
+}
+
+// GetFiles returns all files associated with an installed package.
+func (d *DB) GetFiles(ctx context.Context, pkgName string) ([]pkg.ExtractedFileInfo, error) {
+	rows, err := d.conn.QueryContext(ctx, `
+		SELECT path, sha256, mode
+		FROM files
+		WHERE pkg_name = ?
+		ORDER BY path ASC
+	`, pkgName)
+	if err != nil {
+		return nil, fmt.Errorf("failed querying files for %s: %w", pkgName, err)
+	}
+	defer rows.Close()
+
+	var files []pkg.ExtractedFileInfo
+	for rows.Next() {
+		var f pkg.ExtractedFileInfo
+		var sha sql.NullString
+		var mode sql.NullInt64
+		if err := rows.Scan(&f.Path, &sha, &mode); err != nil {
+			return nil, fmt.Errorf("failed scanning file row: %w", err)
+		}
+		if sha.Valid {
+			f.SHA256 = sha.String
+		}
+		if mode.Valid {
+			f.Mode = mode.Int64
+		}
+		files = append(files, f)
+	}
+
+	return files, nil
+}
+
+// FindOwner finds which package owns the specified file path.
+func (d *DB) FindOwner(ctx context.Context, filePath string) (string, error) {
+	var pkgName string
+	err := d.conn.QueryRowContext(ctx, `
+		SELECT pkg_name
+		FROM files
+		WHERE path = ?
+		LIMIT 1
+	`, filePath).Scan(&pkgName)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", fmt.Errorf("no package owns file %s", filePath)
+		}
+		return "", fmt.Errorf("failed looking up file owner for %s: %w", filePath, err)
+	}
+	return pkgName, nil
+}
+
+// DeleteInstalled removes an installed package record, its dependencies, files, and logs removal in history.
+func (d *DB) DeleteInstalled(ctx context.Context, name string) error {
+	tx, err := d.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var version string
+	_ = tx.QueryRowContext(ctx, "SELECT version FROM installed WHERE name = ?", name).Scan(&version)
+
+	_, err = tx.ExecContext(ctx, "DELETE FROM installed WHERE name = ?", name)
+	if err != nil {
+		return fmt.Errorf("failed deleting installed package %s: %w", name, err)
+	}
+
+	_, _ = tx.ExecContext(ctx, "DELETE FROM files WHERE pkg_name = ?", name)
+	_, _ = tx.ExecContext(ctx, "DELETE FROM depends WHERE pkg_name = ?", name)
+
+	_, _ = tx.ExecContext(ctx, `
+		INSERT INTO history (action, pkg_name, old_version, new_version, timestamp)
+		VALUES ('remove', ?, ?, '', strftime('%s', 'now'))
+	`, name, version)
+
+	return tx.Commit()
+}

@@ -21,3 +21,17 @@ type Package struct {
 	InstallDate int64    `json:"install_date,omitempty"`
 	Files       []string `json:"files,omitempty"`
 }
+
+// ExtractedFileInfo holds metadata about a file extracted from an archive.
+type ExtractedFileInfo struct {
+	Path   string
+	SHA256 string
+	Mode   int64
+	IsDir  bool
+}
+
+// ExtractionResult contains the extracted package metadata and file list.
+type ExtractionResult struct {
+	Package Package
+	Files   []ExtractedFileInfo
+}
